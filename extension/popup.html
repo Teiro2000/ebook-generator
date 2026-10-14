@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg: #fffdf9; --ink: #23201b; --muted: #7a7266; --line: #e6dfd3; --accent: #b4532a; --field: #f7f4ee; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #232020; --ink: #ece6dc; --muted: #9b9286; --line: #36312c; --accent: #e07a4b; --field: #1a1816; }
+  }
+  body { margin: 0; width: 300px; background: var(--bg); color: var(--ink); font: 13px/1.45 "Segoe UI", system-ui, sans-serif; }
+  .wrap { padding: 14px 16px; }
+  h1 { font: 600 16px Georgia, serif; margin: 0 0 10px; }
+  label { display: block; color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
+  select { width: 100%; padding: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--field); color: var(--ink); font: inherit; }
+  .row { display: flex; gap: 8px; }
+  .row > div { flex: 1; }
+  .status { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #aaa; flex: none; }
+  .dot.on { background: #3a9d5d; }
+  .status span { flex: 1; }
+  button { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  .help { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+  .error { color: #c0392b; font-size: 12px; margin-top: 8px; }
+  kbd { font: 11px Consolas, monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; background: var(--field); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🔊 Read Aloud</h1>
+  <label for="voice">Voice</label>
+  <select id="voice"><option value="">Loading voices…</option></select>
+  <div class="row">
+    <div>
+      <label for="speed">Speed</label>
+      <select id="speed">
+        <option value="0.8">0.8×</option><option value="0.9">0.9×</option><option value="1">1×</option>
+        <option value="1.1">1.1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option>
+        <option value="1.75">1.75×</option><option value="2">2×</option>
+      </select>
+    </div>
+    <div>
+      <label for="key">Hotkey</label>
+      <select id="key"></select>
+    </div>
+  </div>
+  <p class="help">Highlight text and press <kbd id="keyHint">F2</kbd>, or right-click → <b>Read aloud</b>. Press it again or <kbd>Esc</kbd> to stop. Backup shortcut: <kbd>Alt+Shift+R</kbd>.</p>
+  <div id="error" class="error" hidden></div>
+  <div class="status">
+    <div class="dot" id="dot"></div>
+    <span id="statusText">Checking app…</span>
+    <button id="appBtn" hidden></button>
+  </div>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>

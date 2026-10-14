@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Ebook Generator - Read Aloud",
+  "version": "1.0.0",
+  "description": "Highlight text and press F2 (or right-click > Read aloud) to hear it in a natural neural voice, with each word highlighted.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyLGgJFQXv+RE5RBy0kDkrC1q7xtPWD9QLmqO4rf/wO+mrWMJuTEo8yZAg7o5RUkEQQiYSDHwsZ4yJgv5h4BzaTUtxlQyl2iUlEVo4i416TekRGkAsqZzdDVYBDk5esAsCcoTZh5/QtOi1GchGwFAo3abGtzOeejYVXMsWYx0LhSm8tOzqdyhTU7Gt2RFerBe1WoIuLetoB4hsqCeKjRofq8pgIUPLvWbbTl9zNmyuPkDnp4Gb6aJ3c2ZraPOww4KCMzl0s2KJK8HycV8dZWxcwxfCiUJ6Irt9465MjIQccHd6XU3ElHlv3iua2nalb+P0TQ007f+BZVz4Ol0SgsrVwIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "contextMenus",
+    "storage",
+    "tts",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:5173/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Read Aloud settings",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "commands": {
+    "read-selection": {
+      "suggested_key": {
+        "default": "Alt+Shift+R"
+      },
+      "description": "Read the selected text aloud (backup for F2)"
+    }
+  }
+}

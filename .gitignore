@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+ebook-generator.log
+extension/native-host/com.ebookgenerator.launcher.json

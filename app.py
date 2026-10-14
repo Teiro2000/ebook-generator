@@ -2,9 +2,15 @@
 
 Run:  python app.py   (or double-click start.bat)
 """
+import argparse
 import asyncio
+import base64
 import io
+import os
 import re
+import socket
+import sys
+import urllib.request
 import threading
 import uuid
 import webbrowser
@@ -91,7 +97,8 @@ def build_book(paras, title):
     for text, lvl in paras:
         starts_chapter = split_level is not None and lvl is not None and 0 < lvl <= split_level
         if current is None or starts_chapter:
-            current = {"title": text if starts_chapter else "Introduction", "paragraphs": []}
+            # Text before the first heading is named after the document itself.
+            current = {"title": text if starts_chapter else title, "paragraphs": []}
             chapters.append(current)
         current["paragraphs"].append({"text": text, "heading": lvl is not None})
 
@@ -101,10 +108,12 @@ def build_book(paras, title):
         chapters, words = [], 0
         for p in all_paras:
             if not chapters or words >= PART_WORDS:
-                chapters.append({"title": f"Part {len(chapters) + 1}", "paragraphs": []})
+                chapters.append({"title": "", "paragraphs": []})
                 words = 0
             chapters[-1]["paragraphs"].append(p)
             words += len(p["text"].split())
+        for i, ch in enumerate(chapters):
+            ch["title"] = title if len(chapters) == 1 else f"{title} - Part {i + 1}"
 
     for ch in chapters:
         ch["chunks"] = make_chunks(ch["paragraphs"])
@@ -155,6 +164,37 @@ def synthesize(text, voice, rate="+0%"):
     return asyncio.run(_synthesize(text, voice, rate))
 
 
+async def _synthesize_with_words(text, voice, rate):
+    audio, boundaries = bytearray(), []
+    async for chunk in edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary").stream():
+        if chunk["type"] == "audio":
+            audio.extend(chunk["data"])
+        elif chunk["type"] == "WordBoundary":
+            boundaries.append(chunk)
+    return bytes(audio), boundaries
+
+
+def synthesize_with_words(text, voice, rate="+0%"):
+    """Audio plus word timings mapped back to character positions in `text`."""
+    audio, boundaries = asyncio.run(_synthesize_with_words(text, voice, rate))
+    words, cursor, lower = [], 0, text.lower()
+    for b in boundaries:
+        word = b["text"]
+        i = text.find(word, cursor)
+        if i < 0:
+            i = lower.find(word.lower(), cursor)
+        if i < 0 or i - cursor > 200:   # couldn't place it (e.g. normalised text); keep timing order intact
+            continue
+        words.append({
+            "start": b["offset"] / 10_000,                     # 100ns ticks -> ms
+            "end": (b["offset"] + b["duration"]) / 10_000,
+            "index": i,
+            "length": len(word),
+        })
+        cursor = i + len(word)
+    return audio, words
+
+
 def rate_string(speed):
     pct = round((float(speed) - 1.0) * 100)
     return f"{pct:+d}%"
@@ -170,6 +210,33 @@ def safe_name(s, limit=60):
 @app.get("/")
 def index():
     return send_from_directory(app.static_folder, "index.html")
+
+
+@app.get("/api/ping")
+def ping():
+    return jsonify({"app": "ebook-generator", "ok": True})
+
+
+@app.post("/api/read")
+def read_selection():
+    """Used by the browser extension: speak a piece of text and report when each word is said."""
+    data = request.get_json(silent=True)
+    if not data or not data.get("text", "").strip():
+        return jsonify({"error": "No text"}), 400
+    try:
+        audio, words = synthesize_with_words(
+            data["text"][:5000], data.get("voice") or DEFAULT_VOICE, rate_string(data.get("speed", 1.0)))
+    except Exception as e:
+        return jsonify({"error": f"Voice service error: {e}"}), 502
+    return jsonify({"audio": base64.b64encode(audio).decode(), "words": words})
+
+
+@app.post("/api/shutdown")
+def shutdown():
+    # get_json(silent=False) rejects non-JSON posts, so ordinary web pages can't trigger this.
+    request.get_json()
+    threading.Timer(0.3, lambda: os._exit(0)).start()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/voices")
@@ -202,19 +269,26 @@ def upload():
         book = parse_docx(io.BytesIO(f.read()), f.filename)
     except Exception as e:
         return jsonify({"error": f"Couldn't read that document: {e}"}), 400
-    return add_book(book)
+    return add_book(book, request.form.get("append"))
 
 
 @app.post("/api/text")
 def paste_text():
     data = request.get_json() or {}
     title = safe_name(data.get("title") or "Pasted text")
-    return add_book(parse_text(data.get("text", ""), title))
+    return add_book(parse_text(data.get("text", ""), title), data.get("append"))
 
 
-def add_book(book):
+def add_book(book, append_to=None):
+    """Store a new book, or add its chapters to the end of an already-open one."""
     if not book["chapters"]:
         return jsonify({"error": "There doesn't seem to be any text to read."}), 400
+    if append_to:
+        existing = books.get(append_to)
+        if not existing:
+            return jsonify({"error": "The open book was lost (app restarted?) - click New book and start again."}), 404
+        existing["chapters"].extend(book["chapters"])
+        return jsonify({"id": append_to, "added": len(book["chapters"]), **existing})
     book_id = uuid.uuid4().hex
     books[book_id] = book
     return jsonify({"id": book_id, **book})
@@ -303,15 +377,57 @@ def export_zip(job_id):
 
 @app.post("/api/open-folder")
 def open_folder():
-    import os
     folder = Path(request.get_json().get("folder", ""))
     if folder.is_dir() and OUTPUT_DIR in folder.parents:
         os.startfile(folder)
     return jsonify({"ok": True})
 
 
+def already_running():
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/ping", timeout=1) as r:
+            return b"ebook-generator" in r.read()
+    except OSError:
+        return False
+
+
+def port_in_use():
+    # Flask's server sets SO_REUSEADDR, which on Windows lets a second copy bind the same port
+    # silently. An exclusive bind tells us for sure whether something already owns it.
+    s = socket.socket()
+    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    try:
+        s.bind(("127.0.0.1", PORT))
+        return False
+    except OSError:
+        return True
+    finally:
+        s.close()
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--background", action="store_true",
+                        help="run hidden for the browser extension (no browser tab, output to a log file)")
+    args = parser.parse_args()
     url = f"http://localhost:{PORT}"
-    print(f"\n  Ebook Generator running at {url}\n  Close this window to stop it.\n")
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    if already_running():
+        # e.g. the extension already started it in the background - just show the app.
+        if not args.background:
+            print(f"\n  Ebook Generator is already running - opening {url}\n")
+            webbrowser.open(url)
+        sys.exit(0)
+    if port_in_use():
+        print(f"\n  Port {PORT} is already in use - probably an older Ebook Generator window.\n"
+              f"  Close it and try again.\n")
+        sys.exit(1)
+
+    if args.background:
+        log = open(BASE_DIR / "ebook-generator.log", "w", buffering=1, encoding="utf-8")
+        sys.stdout = sys.stderr = log
+    else:
+        print(f"\n  Ebook Generator running at {url}\n  Close this window to stop it.\n")
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)

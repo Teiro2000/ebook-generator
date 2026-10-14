@@ -78,9 +78,10 @@
   <h1>📖 Ebook Generator</h1>
   <span class="book-title" id="bookTitle"></span>
   <button class="btn hidden" id="exportBtn">Export MP3s</button>
+  <button class="btn hidden" id="newBtn" title="Close this book and start a new one">New book</button>
   <button class="btn" id="pasteBtn">Paste text</button>
   <button class="btn" id="openBtn">Open Word file</button>
-  <input type="file" id="file" accept=".docx" hidden>
+  <input type="file" id="file" accept=".docx" multiple hidden>
 </header>
 
 <main>
@@ -136,7 +137,7 @@
 </dialog>
 
 <dialog id="pasteDlg">
-  <h2>Paste text</h2>
+  <h2 id="pasteHeading">Paste text</h2>
   <div style="color:var(--muted);font-size:14px">Lines like “Chapter 3” or “Prologue” start a new chapter.</div>
   <input id="pasteTitle" placeholder="Title (optional)" style="width:100%;margin:14px 0 8px;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit">
   <textarea id="pasteText" placeholder="Paste your text here…" style="width:100%;height:300px;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:16px/1.5 var(--serif);resize:vertical"></textarea>
@@ -196,18 +197,38 @@ $("previewBtn").onclick = () => {
 
 // ---------- upload
 $("openBtn").onclick = $("dropBtn").onclick = () => $("file").click();
-$("file").onchange = e => e.target.files[0] && upload(e.target.files[0]);
+$("file").onchange = e => { uploadAll([...e.target.files]); e.target.value = ""; };
 const drop = $("drop");
 ["dragover", "dragenter"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
-document.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) upload(f); });
+document.addEventListener("drop", e => uploadAll([...e.dataTransfer.files]));
 
-async function upload(file) {
-  pause();
-  $("status").textContent = `Reading ${file.name}…`;
-  const fd = new FormData(); fd.append("file", file);
-  const r = await fetch("/api/upload", { method: "POST", body: fd }).then(r => r.json()).catch(() => ({ error: "Upload failed." }));
-  loadBook(r);
+// Files are added in order; if a book is already open they become extra chapters.
+async function uploadAll(files) {
+  for (const file of files) {
+    $("status").textContent = `Reading ${file.name}…`;
+    const fd = new FormData(); fd.append("file", file);
+    if (book) fd.append("append", book.id);
+    const r = await fetch("/api/upload", { method: "POST", body: fd }).then(r => r.json()).catch(() => ({ error: "Upload failed." }));
+    if (r.error) { $("status").textContent = `${file.name}: ${r.error}`; return; }
+    loadBook(r);
+  }
+}
+
+$("newBtn").onclick = () => {
+  pause(); clearCache();
+  book = null; chapter = 0; chunk = 0;
+  $("text").innerHTML = ""; $("chapters").innerHTML = ""; $("bookTitle").textContent = "";
+  $("drop").classList.remove("hidden");
+  ["nav", "exportBtn", "newBtn"].forEach(id => $(id).classList.add("hidden"));
+  setAddMode(false);
+  $("status").textContent = "Open a Word file to begin.";
+};
+
+function setAddMode(on) {
+  $("openBtn").textContent = on ? "Add Word file" : "Open Word file";
+  $("pasteBtn").textContent = on ? "Add text" : "Paste text";
+  $("pasteHeading").textContent = on ? "Add text as new chapter(s)" : "Paste text";
 }
 
 // ---------- paste
@@ -223,36 +244,50 @@ $("pasteText").oninput = () => {
 $("loadPaste").onclick = async () => {
   const text = $("pasteText").value;
   if (!text.trim()) { $("pasteText").focus(); return; }
-  pause();
   $("pasteDlg").close();
   $("status").textContent = "Preparing text…";
   const r = await fetch("/api/text", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: $("pasteTitle").value.trim(), text }),
+    body: JSON.stringify({ title: $("pasteTitle").value.trim(), text, append: book ? book.id : null }),
   }).then(r => r.json()).catch(() => ({ error: "Couldn't load that text." }));
   if (!r.error) { $("pasteText").value = ""; $("pasteTitle").value = ""; $("pasteCount").textContent = ""; }
   loadBook(r);
 };
 
-function loadBook(r) {
-  if (r.error) { $("status").textContent = r.error; return; }
-  book = r; clearCache();
-  $("drop").classList.add("hidden");
-  $("nav").classList.remove("hidden");
-  $("exportBtn").classList.remove("hidden");
-  $("bookTitle").textContent = book.title;
+function renderChapterList() {
   $("chapters").innerHTML = "";
   book.chapters.forEach((c, i) => {
     const b = document.createElement("button");
     b.textContent = c.title; b.onclick = () => { goTo(i, 0); if (playing) playChunk(); };
+    b.classList.toggle("active", i === chapter);
     $("chapters").appendChild(b);
   });
+}
+
+function loadBook(r) {
+  if (r.error) { $("status").textContent = r.error; return; }
+  if (r.added && book && r.id === book.id) {
+    // Chapters appended to the open book: keep playing where we are.
+    const firstNew = book.chapters.length;
+    book = r;
+    renderChapterList();
+    if (!playing) goTo(firstNew, 0, true);
+    $("status").textContent = `Added ${r.added} chapter(s) — ${book.chapters.length} in total.`;
+    return;
+  }
+  pause();
+  book = r; clearCache();
+  $("drop").classList.add("hidden");
+  ["nav", "exportBtn", "newBtn"].forEach(id => $(id).classList.remove("hidden"));
+  setAddMode(true);
+  $("bookTitle").textContent = book.title;
+  renderChapterList();
   const pos = store.get("pos:" + book.title);
   if (pos && pos.chapter < book.chapters.length) {
-    goTo(pos.chapter, Math.min(pos.chunk, book.chapters[pos.chapter].chunks.length - 1));
+    goTo(pos.chapter, Math.min(pos.chunk, book.chapters[pos.chapter].chunks.length - 1), true);
     $("status").textContent = `Resuming where you left off — press play.`;
   } else {
-    goTo(0, 0);
+    goTo(0, 0, true);
     $("status").textContent = `${book.chapters.length} chapter(s) loaded — press play.`;
   }
 }
@@ -275,8 +310,8 @@ function renderChapter() {
   $("reader").scrollTop = 0;
 }
 
-function goTo(ch, ck) {
-  const changed = ch !== chapter || !$("text").children.length;
+function goTo(ch, ck, forceRender = false) {
+  const changed = forceRender || ch !== chapter || !$("text").children.length;
   chapter = ch; chunk = ck;
   if (changed) renderChapter();
   highlight();
