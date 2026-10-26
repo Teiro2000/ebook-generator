@@ -152,31 +152,36 @@ def chapter_text(chapter, start=0, end=None):
 
 # ---------------------------------------------------------------- speech
 
-async def _synthesize(text, voice, rate="+0%"):
-    buf = bytearray()
-    async for chunk in edge_tts.Communicate(text, voice, rate=rate).stream():
-        if chunk["type"] == "audio":
-            buf.extend(chunk["data"])
-    return bytes(buf)
+ATTEMPTS = 3   # Microsoft's free service fails a request now and then; a quick retry almost always works
+
+
+async def _stream(text, voice, rate, boundary):
+    """Audio bytes + word boundaries, retrying failed or stalled requests."""
+    for attempt in range(1, ATTEMPTS + 1):
+        audio, boundaries = bytearray(), []
+        try:
+            communicate = edge_tts.Communicate(text, voice, rate=rate, boundary=boundary,
+                                               connect_timeout=5, receive_timeout=15)
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio.extend(chunk["data"])
+                elif chunk["type"] == "WordBoundary":
+                    boundaries.append(chunk)
+            return bytes(audio), boundaries
+        except Exception as e:
+            print(f"voice request failed (attempt {attempt}/{ATTEMPTS}): {type(e).__name__}: {e}", flush=True)
+            if attempt == ATTEMPTS:
+                raise
+            await asyncio.sleep(0.4 * attempt)
 
 
 def synthesize(text, voice, rate="+0%"):
-    return asyncio.run(_synthesize(text, voice, rate))
-
-
-async def _synthesize_with_words(text, voice, rate):
-    audio, boundaries = bytearray(), []
-    async for chunk in edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary").stream():
-        if chunk["type"] == "audio":
-            audio.extend(chunk["data"])
-        elif chunk["type"] == "WordBoundary":
-            boundaries.append(chunk)
-    return bytes(audio), boundaries
+    return asyncio.run(_stream(text, voice, rate, "SentenceBoundary"))[0]
 
 
 def synthesize_with_words(text, voice, rate="+0%"):
     """Audio plus word timings mapped back to character positions in `text`."""
-    audio, boundaries = asyncio.run(_synthesize_with_words(text, voice, rate))
+    audio, boundaries = asyncio.run(_stream(text, voice, rate, "WordBoundary"))
     words, cursor, lower = [], 0, text.lower()
     for b in boundaries:
         word = b["text"]
